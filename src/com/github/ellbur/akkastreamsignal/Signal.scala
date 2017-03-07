@@ -26,7 +26,16 @@ class Signal[T](publisher: Publisher[T]) {
       subscription foreach (_.request(1))
     }
     
-    override def onComplete() { }
+    override def onComplete(): Unit = {
+      val toNotify =
+        lock.synchronized {
+          val toNotify = (subscribers.values map (s => s.subscriber)).toSeq
+          subscribers.clear()
+          toNotify
+        }
+      
+      toNotify foreach (_.onComplete())
+    }
     
     override def onNext(next: T): Unit = {
       val toNotify =
