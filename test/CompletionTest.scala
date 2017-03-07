@@ -31,6 +31,7 @@ object CompletionTest extends App {
     // 9
     // 10
     // end
+    // 10
     // end
   }
 }

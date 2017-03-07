@@ -72,11 +72,11 @@ class Signal[T](publisher: Publisher[T]) { signal =>
               subscribers += ((this, OurSubscription(subscriber, 0)))
               (signal.completed, current)
             }
+  
+          currentToSend foreach (subscriber.onNext(_))
           
           if (completed)
             subscriber.onComplete()
-          else
-            currentToSend foreach (subscriber.onNext(_))
         }
         
         override def cancel(): Unit = {
