@@ -14,17 +14,16 @@ class Signal[T](publisher: Publisher[T]) { signal =>
   private var completed: Boolean = false
   private case class OurSubscription(subscriber: Subscriber[_ >: T], var credit: Long)
   private val subscribers = mutable.Map[Subscription, OurSubscription]()
+  private var subscription: Option[Subscription] = None
   
   publisher.subscribe(new Subscriber[T] {
-    private[this] var subscription: Option[Subscription] = None
-    
     override def onError(t: Throwable): Unit = {
       t.printStackTrace()
     }
     
     override def onSubscribe(s: Subscription): Unit = {
-      subscription = Some(s)
-      subscription foreach (_.request(1))
+      lock.synchronized(subscription = Some(s))
+      lock.synchronized(subscription) foreach (_.request(1))
     }
     
     override def onComplete(): Unit = {
@@ -40,36 +39,41 @@ class Signal[T](publisher: Publisher[T]) { signal =>
     }
     
     override def onNext(next: T): Unit = {
-      val toNotify =
+      val (anySubscribers, toNotify) =
         lock.synchronized {
           current = Some(next)
-          val toNotify = (subscribers.values map (s => (s.subscriber, s.credit))).toSeq
-          subscribers.values foreach (s => s.credit = math.max(s.credit-1, 0))
-          toNotify
+          
+          val toNotify =
+            subscribers.values.toSeq flatMap { s =>
+              if (s.credit > 0) {
+                s.credit -= 1
+                Seq(s.subscriber): Seq[Subscriber[_ >: T]]
+              }
+              else
+                Seq()
+            }
+          
+          val anySubscribers = subscribers.nonEmpty
+          
+          (anySubscribers, toNotify)
         }
       
-      toNotify foreach { case (subscriber, credit) =>
-        if (credit > 0) {
-          subscriber.onNext(next)
-        }
-      }
+      toNotify foreach (_.onNext(next))
       
-      subscription foreach (_.request {
-        if (toNotify.isEmpty)
-          1
-        else
-          (toNotify map (_._2)).min
-      })
+      if (!anySubscribers)
+        lock.synchronized(subscription) foreach (_.request(1))
     }
   })
   
   private object signalPublisher extends Publisher[T] {
     override def subscribe(subscriber: Subscriber[_ >: T]): Unit = {
       subscriber.onSubscribe(new Subscription {
+        private val ourSubscription = OurSubscription(subscriber, 0)
+        
         {
           val (completed, currentToSend) =
             lock.synchronized {
-              subscribers += ((this, OurSubscription(subscriber, 0)))
+              subscribers += ((this, ourSubscription))
               (signal.completed, current)
             }
   
@@ -80,16 +84,39 @@ class Signal[T](publisher: Publisher[T]) { signal =>
         }
         
         override def cancel(): Unit = {
-          lock.synchronized {
-            subscribers.remove(this)
+          val nowEmpty =
+            lock.synchronized {
+              subscribers.remove(this)
+              subscribers.isEmpty
+            }
+          
+          if (nowEmpty) {
+            lock.synchronized(subscription) foreach (_.request(1))
           }
         }
         
         override def request(n: Long): Unit = {
-          lock.synchronized {
-            val ourSubscription = subscribers(this)
-            ourSubscription.credit += n
-          }
+          val toRequest =
+            lock.synchronized {
+              val oldMin =
+                if (subscribers.nonEmpty)
+                  (subscribers.values map (_.credit)).min
+                else
+                  0
+              
+              ourSubscription.credit += n
+              
+              val newMin =
+                if (subscribers.nonEmpty)
+                  (subscribers.values map (_.credit)).min
+                else
+                  0
+              
+              newMin - oldMin
+            }
+  
+          if (toRequest > 0)
+            lock.synchronized(subscription) foreach (_.request(n))
         }
       })
     }
