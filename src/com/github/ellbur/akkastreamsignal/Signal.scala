@@ -8,9 +8,10 @@ import org.reactivestreams.{Publisher, Subscriber, Subscription}
 
 import scala.collection.mutable
 
-class Signal[T](publisher: Publisher[T]) {
+class Signal[T](publisher: Publisher[T]) { signal =>
   private val lock = new Object
   private var current: Option[T] = None
+  private var completed: Boolean = false
   private case class OurSubscription(subscriber: Subscriber[_ >: T], var credit: Long)
   private val subscribers = mutable.Map[Subscription, OurSubscription]()
   
@@ -29,6 +30,7 @@ class Signal[T](publisher: Publisher[T]) {
     override def onComplete(): Unit = {
       val toNotify =
         lock.synchronized {
+          completed = true
           val toNotify = (subscribers.values map (s => s.subscriber)).toSeq
           subscribers.clear()
           toNotify
@@ -65,13 +67,16 @@ class Signal[T](publisher: Publisher[T]) {
     override def subscribe(subscriber: Subscriber[_ >: T]): Unit = {
       subscriber.onSubscribe(new Subscription {
         {
-          val currentToSend =
+          val (completed, currentToSend) =
             lock.synchronized {
               subscribers += ((this, OurSubscription(subscriber, 0)))
-              current
+              (signal.completed, current)
             }
           
-          currentToSend foreach (subscriber.onNext(_))
+          if (completed)
+            subscriber.onComplete()
+          else
+            currentToSend foreach (subscriber.onNext(_))
         }
         
         override def cancel(): Unit = {
