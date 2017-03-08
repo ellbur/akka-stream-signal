@@ -116,7 +116,7 @@ class Signal[T](publisher: Publisher[T]) { signal =>
             }
   
           if (toRequest > 0)
-            lock.synchronized(subscription) foreach (_.request(n))
+            lock.synchronized(subscription) foreach (_.request(toRequest))
         }
       })
     }
